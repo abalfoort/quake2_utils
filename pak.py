@@ -81,64 +81,103 @@ def make_pak_name(fullpath, root, strip_prefix):
 def utf8_invalid_positions(b: bytes):
     """Return a list of byte indices where invalid UTF-8 sequences start.
 
-    This performs a byte-level scan of 'b' and identifies the start
-    indices of invalid UTF-8 sequences according to UTF-8 encoding rules.
+    The function scans the input bytes one byte at a time and attempts to
+    validate UTF-8 encoded code points. When it encounters a start byte that
+    cannot begin a valid UTF-8 sequence (or the following continuation
+    bytes are missing or invalid), it records the index of that start byte.
+
+    The checks follow UTF-8 encoding rules:
+    - ASCII bytes (0x00..0x7F) are single-byte code points.
+    - 2-byte sequences start with bytes 0xC2..0xDF and must be followed by
+      a single continuation byte in range 0x80..0xBF.
+      Note: 0xC0 and 0xC1 are disallowed because they would create overlong
+      encodings for ASCII.
+    - 3-byte sequences start with 0xE0..0xEF and must be followed by two
+      continuation bytes. Additional checks prevent overlong encodings and
+      UTF-16 surrogate halves:
+        * If the first byte is 0xE0, the next byte must be 0xA0..0xBF to avoid
+          encoding values that could have been encoded with fewer bytes
+          (overlong sequences).
+        * If the first byte is 0xED, the next byte must be 0x80..0x9F to avoid
+          encoding UTF-16 surrogate range (U+D800..U+DFFF), which is invalid
+          in UTF-8.
+    - 4-byte sequences start with 0xF0..0xF4 and require three continuation
+      bytes. Additional range checks on the second byte prevent overlong
+      encodings and values beyond U+10FFFF:
+        * If the first byte is 0xF0, the second byte must be 0x90..0xBF.
+        * If the first byte is 0xF4, the second byte must be 0x80..0x8F.
+
+    For any start byte that does not match a valid header range or when the
+    required continuation bytes are absent or out of range, the index of the
+    start byte is appended to the returned list.
     """
     positions = []
     i = 0
     n = len(b)
     while i < n:
         byte = b[i]
-        # 0x00..0x7F: ASCII
+        # ASCII: single-byte 0x00..0x7F
         if byte <= 0x7F:
             i += 1
             continue
-        # 2-byte sequence (U+0080..U+07FF)
+        # 2-byte sequence header: 0xC2..0xDF (0xC0 and 0xC1 are invalid)
+        # Valid encoding form: [0xC2..0xDF] [0x80..0xBF]
         if 0xC2 <= byte <= 0xDF:
             if i + 1 < n and 0x80 <= b[i+1] <= 0xBF:
                 i += 2
                 continue
+            # Missing or invalid continuation byte
             positions.append(i)
             i += 1
             continue
-        # 3-byte sequence
+        # 3-byte sequence header: 0xE0..0xEF
+        # Valid encoding form: [0xE0..0xEF] [cont1] [cont2]
         if 0xE0 <= byte <= 0xEF:
             if i + 2 < n:
                 b1, b2 = b[i+1], b[i+2]
-                # overlong/UTF-16 surrogate checks
+                # If header == 0xE0, cont1 must be >= 0xA0 to avoid overlong
                 if byte == 0xE0 and not 0xA0 <= b1 <= 0xBF:
                     positions.append(i)
                     i += 1
                     continue
+                # If header == 0xED, cont1 must be <= 0x9F to avoid UTF-16
+                # surrogate halves (U+D800..U+DFFF) encoded in UTF-8.
                 if byte == 0xED and not 0x80 <= b1 <= 0x9F:
                     positions.append(i)
                     i += 1
                     continue
+                # General case: both continuation bytes must be 0x80..0xBF
                 if 0x80 <= b1 <= 0xBF and 0x80 <= b2 <= 0xBF:
                     i += 3
                     continue
+            # Either not enough bytes remain or continuation bytes invalid
             positions.append(i)
             i += 1
             continue
-        # 4-byte sequence
+        # 4-byte sequence header: 0xF0..0xF4
+        # Valid encoding form: [0xF0..0xF4] [cont1] [cont2] [cont3]
         if 0xF0 <= byte <= 0xF4:
             if i + 3 < n:
                 b1, b2, b3 = b[i+1], b[i+2], b[i+3]
+                # If header == 0xF0, cont1 must be >= 0x90 to avoid overlong
                 if byte == 0xF0 and not 0x90 <= b1 <= 0xBF:
                     positions.append(i)
                     i += 1
                     continue
+                # If header == 0xF4, cont1 must be <= 0x8F to stay <= U+10FFFF
                 if byte == 0xF4 and not 0x80 <= b1 <= 0x8F:
                     positions.append(i)
                     i += 1
                     continue
+                # All three continuation bytes must be 0x80..0xBF
                 if (0x80 <= b1 <= 0xBF and 0x80 <= b2 <= 0xBF and 0x80 <= b3 <= 0xBF):
                     i += 4
                     continue
+            # Missing or invalid continuation bytes for 4-byte sequence
             positions.append(i)
             i += 1
             continue
-        # anything else is invalid
+        # Any other leading byte value is not valid UTF-8
         positions.append(i)
         i += 1
     return positions
