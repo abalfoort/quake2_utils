@@ -1,37 +1,25 @@
 #!/bin/bash
 
-Q2DIR='/home/shared/Games/q2rtx'
 GAMEDIRS='baseq2 rogue xatrix zaero 3zb2 ctf'
-SKIPFILES='prefetch toggles clusters'
+PAKDIR='workingdir/_pak'
 
-function copy_file() {
-    for F in $1/$2/*.$3; do
-        [ ! -e $F ] && continue
-        SKIP=false
-        FNAME=$(basename $F)
-        for S in $SKIPFILES; do
-            [[ "$FNAME" == *$S* ]] && SKIP=true; continue
-        done
-        $SKIP && continue
-        cmp -s "$F" "$Q2DIR/$2/$FNAME"
-        [ $? -eq 1 ] || [ ! -e "$Q2DIR/$2/$FNAME" ] && cp -vf $F "$Q2DIR/$2/"
-    done
-}
+# Copy needed files for testing
+rm -rf test; mkdir -p test/{3zb2,baseq2,ctf,rogue,xatrix,zaero}
+cp -vf src/q2rtx test/
+cp -vf src/q2rtxded test/
+cp -vf {src/3zb2/*.pkz,src/3zb2/*.pak,src/3zb2/*.so} test/3zb2/
+cp -vf {src/baseq2/*.pkz,src/baseq2/*.pak,src/baseq2/*.so} test/baseq2/
+cp -vf {src/rogue/*.pkz,src/rogue/*.so} test/rogue/
+cp -vf {src/xatrix/*.pkz,src/xatrix/*.so} test/xatrix/
+cp -vf {src/zaero/*.pkz,src/zaero/*.so} test/zaero/
+cp -rvf src/ctf/* test/ctf/
 
-cmp -s src/q2rtx "$Q2DIR/q2rtx"
-[ $? -eq 1 ] && cp -vf src/q2rtx $Q2DIR
-cmp -s src/q2rtxded "$Q2DIR/q2rtxded"
-[ $? -eq 1 ] && cp -vf src/q2rtxded $Q2DIR
-
+# Copy pak files
 for D in $GAMEDIRS; do
-    for E in so pkz pak cfg lst txt ico; do
-        copy_file src $D $E
-        if [ "$D" == "baseq2" ] && [ "$E" == pak ]; then continue; fi
-        copy_file q2rtx_media $D $E
-    done
+    cp -vf $PAKDIR/$D/*.pak test/$D/
 done
 
-cd $Q2DIR
+cd test
 
 echo
 echo "Cheat codes:"
@@ -76,4 +64,3 @@ do
         *) echo "invalid option $REPLY";;
     esac
 done
- 
