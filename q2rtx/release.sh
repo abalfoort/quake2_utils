@@ -3,6 +3,7 @@
 # Edit these
 WINDIR='/media/WIN11/Users/arjen/Downloads/q2rtx'
 GAMEDIRS='baseq2 rogue xatrix zaero 3zb2 ctf'
+SKIPFILES='prefetch toggles clusters'
 
 # Get Q2RTX version
 MAJOR=$(grep -Po "Q2RTX_VERSION_MAJOR +\K[0-9]*" src/CMakeLists.txt)
@@ -39,19 +40,26 @@ cd release
 
 function copy_file() {
     for F in $1/$2/*.$3; do
-        [ ! -e $F ] && break
+        [ ! -e $F ] && continue
+        SKIP=false
         FNAME=$(basename $F)
+        for S in $SKIPFILES; do
+            [[ "$FNAME" == *$S* ]] && SKIP=true; continue
+        done
+        $SKIP && continue
         cmp -s "$F" "$4/$2/$FNAME"
-        [ $? -gt 0 ] && cp -vf $F "$4/$2/"
+        [ $? -gt 0 ] || [ ! -e "$Q2DIR/$2/$FNAME" ] && cp -vf $F "$4/$2/"
     done
 }
 
 # Debian
 for D in $GAMEDIRS; do
-    for E in so pkz pak; do
+    for E in so pkz pak cfg lst txt ico; do
+
         copy_file ../src $D $E $DEBRELEASE
         copy_file ../q2rtx_media $D $E $MEDIAMPSRELEASE
     done
+    cp -rvf ../q2rtx_media/$D/user_guide $MEDIAMPSRELEASE/$D 2>/dev/null
 done
 mv -vf $MEDIAMPSRELEASE/baseq2 $MEDIARELEASE/
 cp -vf ../src/q2rtx $DEBRELEASE/
@@ -60,7 +68,6 @@ cp -vf ../src/setup/q2rtx.png $DEBRELEASE/
 cp -vf ../src/license.txt $DEBRELEASE/
 cp -vf ../src/notice.txt $DEBRELEASE/
 cp -vf ../src/*.md $DEBRELEASE/
-cp -vf ../src/*.sh $DEBRELEASE/
 cp -vf ../workingdir/readme_debian.txt $DEBRELEASE/readme
 
 tar -czvf "$DEBRELEASE.tar.gz" "$DEBRELEASE"

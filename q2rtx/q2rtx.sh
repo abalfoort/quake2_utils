@@ -2,13 +2,19 @@
 
 Q2DIR='/home/shared/Games/q2rtx'
 GAMEDIRS='baseq2 rogue xatrix zaero 3zb2 ctf'
+SKIPFILES='prefetch toggles clusters'
 
 function copy_file() {
     for F in $1/$2/*.$3; do
-        [ ! -e $F ] && break
+        [ ! -e $F ] && continue
+        SKIP=false
         FNAME=$(basename $F)
+        for S in $SKIPFILES; do
+            [[ "$FNAME" == *$S* ]] && SKIP=true; continue
+        done
+        $SKIP && continue
         cmp -s "$F" "$Q2DIR/$2/$FNAME"
-        [ $? -eq 1 ] && cp -vf $F "$Q2DIR/$2/"
+        [ $? -eq 1 ] || [ ! -e "$Q2DIR/$2/$FNAME" ] && cp -vf $F "$Q2DIR/$2/"
     done
 }
 
@@ -18,7 +24,7 @@ cmp -s src/q2rtxded "$Q2DIR/q2rtxded"
 [ $? -eq 1 ] && cp -vf src/q2rtxded $Q2DIR
 
 for D in $GAMEDIRS; do
-    for E in so pkz pak; do
+    for E in so pkz pak cfg lst txt ico; do
         copy_file src $D $E
         if [ "$D" == "baseq2" ] && [ "$E" == pak ]; then continue; fi
         copy_file q2rtx_media $D $E
