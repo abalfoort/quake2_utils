@@ -2,30 +2,47 @@
 """PAK utility: create, list, and unpack Quake .pak files.
 
 Usage examples:
-    python3 pak.py -p mypak.pak ./subdir
-    python3 pak.py -u mypak.pak ./outdir
-    python3 pak.py -l mypak.pak
-    python3 pak.py -l mypak.pak -v    # show invalid-byte positions
+        # Create a pak from a directory
+        python3 pak.py -p mypak.pak ./subdir
+
+        # List pak(s) (filter supports glob or regex)
+        python3 pak.py -l mypak.pak
+        python3 pak.py -l "*.pak" -f "*.bsp"
+
+        # Unpack one or more pak files into OUT_DIR. To avoid ambiguity with
+        # the `-u` argument's positional values, pass `-f` before `-u`:
+        python3 pak.py -f "*.bsp" -u "*.pak" outdir
 
 Behavior:
-- Inputs must be subdirectories of the current working directory and are walked recursively.
-- The script always uses the current working directory as the root.
+- Inputs for `-p/--pak` are subdirectories (walked recursively) or file/glob
+    patterns; the current working directory is used as the root for stored
+    names and for pattern expansion.
+- `-l/--list` accepts one or more pak file paths or glob patterns.
+- `-u/--unpak` accepts one or more pak file paths or glob patterns followed by
+    an output directory: `-u PAK [PAK ...] OUT_DIR`.
+- The `-f/--filter` option restricts which pak-internal file names are
+    displayed or extracted; it accepts a regex or a glob pattern (e.g. "*.bsp").
 - Each input subdirectory prefix is automatically stripped from stored names.
-- When creating a pak file, names are ASCII-encoded; names longer than 56 bytes cause an error.
-- When listing or unpacking, names are decoded as UTF-8 with replacement for invalid sequences.
-- When listing or unpacking, invalid UTF-8 byte positions in names are reported if -v/--verbose is used.
+- When creating a pak file, names are ASCII-encoded; names longer than 56
+    bytes cause an error.
+- When listing or unpacking, names are decoded as UTF-8 with replacement for
+    invalid sequences. Invalid UTF-8 byte positions in stored names are shown
+    when `-v/--verbose` is used.
 
 - Short flags:
-  -p == --pak
-  -l == --list
-  -u == --unpak
-  -h == --help
-  -v == --verbose
+    -p == --pak
+    -l == --list
+    -u == --unpak
+    -h == --help
+    -v == --verbose
 """
 import os
 import struct
 import argparse
 import sys
+import glob
+import re
+import fnmatch
 
 NAME_SIZE = 56
 
@@ -35,23 +52,46 @@ def collect_inputs(inputs, root):
     'root' is expected to be the current working directory.
     Each returned tuple includes the absolute file path and the input dir path
     relative to 'root' (used as the strip-prefix).
+
+    This function also accepts glob patterns (e.g. "*.pak") and individual file
+    paths. If an input expands to a file, that file is returned with its
+    containing directory used as the strip-prefix. If a pattern matches zero
+    paths the function exits with an error.
     """
     files = []
     for inp in inputs:
-        # Input is a subdirectory of current dir; interpret relative to root
-        full_dir = inp if os.path.isabs(inp) else os.path.join(root, inp)
-        if not os.path.exists(full_dir):
-            print(f"Error: path not found: {full_dir}", file=sys.stderr)
-            sys.exit(1)
-        if not os.path.isdir(full_dir):
-            print(f"Error: '{inp}' is not a directory; "
-                   "inputs must be subdirectories of the current directory", file=sys.stderr)
-            sys.exit(1)
-        # compute input directory path relative to root, using forward slashes
-        input_rel = os.path.relpath(full_dir, root).replace(os.sep, '/')
-        for dirpath, _, filenames in os.walk(full_dir):
-            for fn in filenames:
-                files.append((os.path.join(dirpath, fn), input_rel))
+        # If the input contains glob characters, expand relative to root
+        pattern = inp
+        if not os.path.isabs(pattern):
+            pattern = os.path.join(root, pattern)
+        matches = glob.glob(pattern)
+        # If no glob characters matched anything, treat the literal path
+        if not matches:
+            matches = [pattern]
+
+        for match in matches:
+            full_dir = match
+            if not os.path.exists(full_dir):
+                print(f"Error: path not found: {full_dir}", file=sys.stderr)
+                sys.exit(1)
+            # If match is a file, use its directory as the strip-prefix and
+            # add the file itself to the list. If it's a directory, walk it.
+            if os.path.isfile(full_dir):
+                input_rel = os.path.relpath(os.path.dirname(full_dir), root).replace(os.sep, '/')
+                files.append((os.path.join(os.path.dirname(full_dir),
+                                           os.path.basename(full_dir)),
+                                           input_rel))
+            else:
+                if not os.path.isdir(full_dir):
+                    print(f"Error: '{inp}' is not a directory; "
+                           "inputs must be subdirectories of the current directory",
+                           file=sys.stderr)
+                    sys.exit(1)
+                # compute input directory path relative to root, using forward slashes
+                input_rel = os.path.relpath(full_dir, root).replace(os.sep, '/')
+                for dirpath, _, filenames in os.walk(full_dir):
+                    for fn in filenames:
+                        files.append((os.path.join(dirpath, fn), input_rel))
     # dedupe and preserve deterministic order
     uniq = []
     seen = set()
@@ -250,12 +290,18 @@ def list_pak(pak_path):
     return entries
 
 
-def unpak(pak_path, out_dir, verbose=False):
-    """Unpack the contents of 'pak_path' into 'out_dir'."""
+def unpak(pak_path, out_dir, verbose=False, filter_re=None):
+    """Unpack the contents of 'pak_path' into 'out_dir'.
+
+    If `filter_re` is provided, only entries whose pak-internal name
+    matches the regex will be extracted.
+    """
     entries = list_pak(pak_path)
     os.makedirs(out_dir, exist_ok=True)
     with open(pak_path, 'rb') as fh:
         for name, off, sz, invalid_positions in entries:
+            if filter_re and not filter_re.search(name):
+                continue
             target = os.path.join(out_dir, name)
             target_dir = os.path.dirname(target)
             if target_dir:
@@ -276,18 +322,21 @@ def unpak(pak_path, out_dir, verbose=False):
 def print_help():
     """Print usage help."""
     print("PAK utility — usage:\n")
-    print("Create a pak:\n  python3 pak.py -p PAK INPUT_SUBDIR [INPUT_SUBDIR ...]\n"
-          "  example: python3 pak.py -p mypak.pak id1")
+    print("Create a pak:\n  python3 pak.py -p PAK INPUT_SUBDIR|FILE|GLOB [INPUT_SUBDIR|...]\n"
+        "  example: python3 pak.py -p mypak.pak id1")
     print()
-    print("List pak contents:\n  python3 pak.py -l PAK\n"
-          "  example: python3 pak.py -l mypak.pak")
+    print("List pak contents:\n  python3 pak.py -l PAK|GLOB [PAK ...]\n"
+        "  example: python3 pak.py -l \"*.pak\"\n"
+        "  example (with filter): python3 pak.py -l \"*.pak\" -f \"*.bsp\"")
     print()
-    print("Unpack pak:\n  python3 pak.py -u PAK OUT_DIR\n"
-          "  example: python3 pak.py -u mypak.pak ./outdir")
+    print("Unpack pak:\n  python3 pak.py -u PAK|GLOB [PAK ...] OUT_DIR\n"
+        "  example: python3 pak.py -u \"*.pak\" other.pak ./outdir\n"
+        "  example (use filter before -u to avoid ambiguity): python3 pak.py -f \"*.bsp\" -u \"*.pak\" outdir")
     print()
     print("Verbose flag: -v/--verbose shows invalid-byte positions and per-file messages")
+    print("Filter flag: -f/--filter restricts listed/unpacked entries by regex or glob")
     print()
-    print("Short flags: -p == --pak, -l == --list, -u == --unpak, -h == --help, -v == --verbose")
+    print("Short flags: -p == --pak, -l == --list, -u == --unpak, -h == --help, -v == --verbose, -f == --filter")
 
 
 def main():
@@ -305,17 +354,20 @@ def main():
                        dest='pak',
                        help='Create a pak. Usage: --pak PAK INPUT_SUBDIR [INPUT_SUBDIR ...]')
     group.add_argument('-l', '--list',
-                       nargs=1,
+                       nargs='+',
                        dest='list',
-                       help='List contents: --list PAK')
+                       help='List contents: --list PAK [PAK ...]')
     group.add_argument('-u', '--unpak',
-                       nargs=2,
+                       nargs='+',
                        dest='unpak',
-                       help='Unpack contents: --unpak PAK OUT_DIR')
+                       help='Unpack contents: --unpak PAK [PAK ...] OUT_DIR')
     p.add_argument('-v', '--verbose',
                    action='store_true',
                    dest='verbose',
                    help='Show extra information (invalid-byte positions, per-file messages)')
+    p.add_argument('-f', '--filter',
+                   dest='filter',
+                   help='Regex or glob to filter listed pak entries (e.g. "\\.bsp$" or "*.bsp")')
     args = p.parse_args()
 
     if args.helpflag:
@@ -323,6 +375,14 @@ def main():
         return
 
     try:
+        # Prepare filter regex (supports glob-style patterns too)
+        filter_re = None
+        if args.filter:
+            if any(c in args.filter for c in '*?['):
+                filter_re = re.compile(fnmatch.translate(args.filter))
+            else:
+                filter_re = re.compile(args.filter)
+
         if args.pak:
             pak = args.pak[0]
             inputs = args.pak[1:]
@@ -332,17 +392,51 @@ def main():
             create_pak(pak, inputs, verbose=args.verbose)
             print(f"Created pak: {os.path.abspath(pak)}")
         elif args.list:
-            pak = args.list[0]
-            entries = list_pak(pak)
-            for name, _off, _sz, invalid_positions in entries:
-                if invalid_positions and args.verbose:
-                    print(f"{name}  (invalid UTF-8 at positions: "
-                          f"{','.join(map(str, invalid_positions))})")
-                else:
-                    print(name)
+            seen = set()
+            for pattern in args.list:
+                matches = glob.glob(pattern)
+                if not matches:
+                    matches = [pattern]
+                for pakfile in matches:
+                    if pakfile in seen:
+                        continue
+                    seen.add(pakfile)
+                    # Print header when user provided multiple patterns or
+                    # the pattern expanded to multiple files (wildcard use).
+                    show_header = (len(args.list) > 1 or len(matches) > 1 or
+                                   any(c in pattern for c in '*?['))
+                    if show_header:
+                        print(f"\n> Listing: {pakfile}")
+                    entries = list_pak(pakfile)
+                    for name, _off, _sz, invalid_positions in entries:
+                        if filter_re and not filter_re.search(name):
+                            continue
+                        if invalid_positions and args.verbose:
+                            print(f"{name}  (invalid UTF-8 at positions: "
+                                  f"{','.join(map(str, invalid_positions))})")
+                        else:
+                            print(name)
         elif args.unpak:
-            pak, outdir = args.unpak
-            unpak(pak, outdir, verbose=args.verbose)
+            # last argument is the output directory, preceding args are pak patterns
+            if len(args.unpak) < 2:
+                p.error('When using -u/--unpak you must provide at least one pak and an output directory')
+            pak_patterns = args.unpak[:-1]
+            outdir = args.unpak[-1]
+            seen = set()
+            for pattern in pak_patterns:
+                matches = glob.glob(pattern)
+                if not matches:
+                    matches = [pattern]
+                for pakfile in matches:
+                    if pakfile in seen:
+                        continue
+                    seen.add(pakfile)
+                    # Print which pak is being unpacked when patterns/wildcards used
+                    show_header = (len(pak_patterns) > 1 or len(matches) > 1 or
+                                   any(c in pattern for c in '*?['))
+                    if show_header:
+                        print(f"Unpacking: {pakfile} -> {outdir}")
+                    unpak(pakfile, outdir, verbose=args.verbose, filter_re=filter_re)
             print(f"Extracted pak to: {os.path.abspath(outdir)}")
         else:
             # no mode provided
